@@ -3,6 +3,7 @@ pragma solidity 0.8.22;
 
 import "./lib/Tick.sol";
 import "./lib/TickMath.sol";
+import "./lib/TickBitmap.sol";
 import "./lib/SwapMath.sol";
 import "./lib/Position.sol";
 import "./lib/SafeCast.sol";
@@ -16,10 +17,12 @@ function checkTicks(int24 tickLower, int24 tickUpper) pure {
 }
 
 contract Clam {
+    using SafeCast for uint256;
     using SafeCast for int256;
-    using Position for mapping (bytes32 => Position.Info);
+    using Position for mapping(bytes32 => Position.Info);
     using Position for Position.Info;
-    using Tick for mapping (int24 => Tick.Info);
+    using Tick for mapping(int24 => Tick.Info);
+    using TickBitmap for mapping(int16 => uint256);
 
     address public immutable token0;
     address public immutable token1;
@@ -61,8 +64,9 @@ contract Clam {
     uint256 public feeGrowthGlobal0X128;
     uint256 public feeGrowthGlobal1X128;
     uint128 public liquidity;
-    mapping (int24 => Tick.Info) public ticks;
-    mapping (bytes32 => Position.Info) public positions;
+    mapping(int24 => Tick.Info) public ticks;
+    mapping(bytes32 => Position.Info) public positions;
+    mapping(int16 => uint256) public tickBitmap;
 
     modifier lock {
         require(slot0.unlocked, "locked");
@@ -127,12 +131,12 @@ contract Clam {
                 maxLiquidityPerTick
             );
 
-            // if (flippedLower) {
-            //     tickBitmap.flipTick(tickLower, tickSpacing);
-            // }
-            // if (flippedUpper) {
-            //     tickBitmap.flipTick(tickUpper, tickSpacing);
-            // }
+            if (flippedLower) {
+                tickBitmap.flipTick(tickLower, tickSpacing);
+            }
+            if (flippedUpper) {
+                tickBitmap.flipTick(tickUpper, tickSpacing);
+            }
         }
 
         // (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = ticks
@@ -311,6 +315,14 @@ contract Clam {
 
             step.sqrtPriceStartX96 = state.sqrtPriceX96;
 
+            (step.tickNext, step.initialized) = tickBitmap.nextInitializedTickWithinOneWord(state.tick, tickSpacing, zeroForOne);
+
+            if (step.tickNext < TickMath.MIN_TICK) {
+                step.tickNext = TickMath.MIN_TICK;
+            } else if (step.tickNext > TickMath.MAX_TICK) {
+                step.tickNext = TickMath.MAX_TICK;
+            }
+
             step.sqrtPriceNextX96 = TickMath.getSqrtRatioAtTick(step.tickNext);
 
             (state.sqrtPriceX96, step.amountIn, step.amountOut, step.feeAmount)
@@ -326,13 +338,36 @@ contract Clam {
                 fee
             );
 
-            // if (exactInput) {
-            //     state.amountSpecifiedRemaining -= (step.amountIn + step.feeAmount).toInt256();
-            //     state.amountCalculated -= step.amountOut.toInt256();
-            // } else {
-            //     state.amountSpecifiedRemaining += step.amountOut.toInt256();
-            //     state.amountCalculated += (step.amountIn + step.feeAmount).toInt256();
-            // }
+            if (exactInput) {
+                state.amountSpecifiedRemaining -= (step.amountIn + step.feeAmount).toInt256();
+                state.amountCalculated -= step.amountOut.toInt256();
+            } else {
+                state.amountSpecifiedRemaining += step.amountOut.toInt256();
+                state.amountCalculated += (step.amountIn + step.feeAmount).toInt256();
+            }
+
+            if (state.sqrtPriceX96 == step.sqrtPriceNextX96) {
+                if (step.initialized) {
+                    int128 liquidityNet = ticks.cross(
+                        step.tickNext, 
+                        zeroForOne ? state.feeGrowthGlobalX128 : feeGrowthGlobal0X128, 
+                        zeroForOne ? feeGrowthGlobal1X128 : state.feeGrowthGlobalX128
+                    );
+
+                    if (zeroForOne) {
+                        liquidityNet = -liquidityNet;
+                    }
+
+                    state.liquidity = liquidity < 0 
+                    ? state.liquidity - uint128(-liquidityNet)
+                    : state.liquidity + uint128(liquidityNet);
+                }
+                state.tick = zeroForOne 
+                ? step.tickNext - 1
+                : step.tickNext;
+            } else if (state.sqrtPriceX96 != step.sqrtPriceStartX96) {
+                state.tick = TickMath.getTickAtSqrtRatio(state.sqrtPriceX96);
+            }
         }
         
         if (state.tick != slot0Start.tick) {
