@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.22;
 
+import "./FullMath.sol";
+import "./FixedPoint128.sol";
+
 library Position {
     // info stored for each user's position
     struct Info {
@@ -36,8 +39,31 @@ library Position {
                 require(_self.liquidity > 0, "Zero liquidity");
             }
 
+            uint128 tokensOwed0 = uint128(
+                FullMath.mulDiv(
+                    feeGrowthInside0X128 - _self.feeGrowthInside0LastX128,
+                    _self.liquidity,
+                    FixedPoint128.Q128
+                )
+            );
+
+            uint128 tokensOwed1 = uint128(
+                FullMath.mulDiv(
+                    feeGrowthInside1X128 - _self.feeGrowthInside1LastX128,
+                    _self.liquidity,
+                    FixedPoint128.Q128
+                )
+            );
+
             if(liquidityDelta != 0) {
                 self.liquidity = liquidityDelta < 0 ? _self.liquidity - uint128(-liquidityDelta) : _self.liquidity + uint128(liquidityDelta);
             }
+
+            if (tokensOwed0 > 0 || tokensOwed1 > 0) {
+                self.tokensOwed0 += tokensOwed0;
+                self.tokensOwed1 += tokensOwed1;
+            }
     }
+
+
 }

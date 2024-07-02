@@ -8,6 +8,8 @@ import "./lib/SwapMath.sol";
 import "./lib/Position.sol";
 import "./lib/SafeCast.sol";
 import "./lib/SqrtPriceMath.sol";
+import "./lib/FullMath.sol";
+import "./lib/FixedPoint128.sol";
 import "./interfaces/IERC20.sol";
 
 function checkTicks(int24 tickLower, int24 tickUpper) pure {
@@ -104,8 +106,8 @@ contract Clam {
     function _updatePosition(address owner, int24 tickLower, int24 tickUpper, int128 liquidityDelta, int24 tick) private returns (Position.Info storage position) {
         position = positions.get(owner, tickLower, tickUpper);
 
-        uint256 _feeGrowthGlobal0X128 = 0; // SLOAD for gas optimization
-        uint256 _feeGrowthGlobal1X128 = 0; // SLOAD for gas optimization
+        uint256 _feeGrowthGlobal0X128 = feeGrowthGlobal0X128;
+        uint256 _feeGrowthGlobal1X128 = feeGrowthGlobal1X128;
 
         //TODO fees
         bool flippedLower;
@@ -139,18 +141,16 @@ contract Clam {
             }
         }
 
-        // (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = ticks
-        //     .getFeeGrowthInside(
-        //     tickLower,
-        //     tickUpper,
-        //     tick,
-        //     _feeGrowthGlobal0X128,
-        //     _feeGrowthGlobal1X128
-        // );
-
-        position.update(
-            liquidityDelta, 0, 0
+        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = ticks
+            .getFeeGrowthInside(
+            tickLower,
+            tickUpper,
+            tick,
+            _feeGrowthGlobal0X128,
+            _feeGrowthGlobal1X128
         );
+
+        position.update(liquidityDelta, feeGrowthInside0X128, feeGrowthInside1X128);
 
         // Liquidity decreased and tick was flipped = liquidity after is 0
         if (liquidityDelta < 0) {
@@ -344,6 +344,10 @@ contract Clam {
             } else {
                 state.amountSpecifiedRemaining += step.amountOut.toInt256();
                 state.amountCalculated += (step.amountIn + step.feeAmount).toInt256();
+            }
+
+            if (state.liquidity > 0) {
+                state.feeGrowthGlobalX128 += FullMath.mulDiv(step.feeAmount, FixedPoint128.Q128, state.liquidity);
             }
 
             if (state.sqrtPriceX96 == step.sqrtPriceNextX96) {
